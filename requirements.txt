@@ -1,2 +1,7 @@
 vkbottle==4.11.0
 python-dotenv==1.2.4
+# loguru нужен vkbottle как логгер с методом .opt().
+# Без него vkbottle/modules.py переключается на logging-адаптер без .opt(),
+# и сообщения об ошибках падают с AttributeError, скрывая настоящую проблему.
+loguru==0.7.3
+pytest==9.1.1
