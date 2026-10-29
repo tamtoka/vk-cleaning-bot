@@ -242,13 +242,14 @@ def main_keyboard() -> Keyboard:
     keyboard.add(Text("Оставить заявку"))
     return keyboard
 
-
 def services_keyboard(catalog: list[Service]) -> Keyboard:
     keyboard = Keyboard(one_time=False, inline=False)
     for service in catalog:
         keyboard.add(Text(service.name))
         keyboard.row()
     keyboard.add(Text("Прайс-лист"))
+    keyboard.row()
+    keyboard.add(Text("Оставить заявку"))
     keyboard.row()
     keyboard.add(Text("Главное меню"))
     return keyboard
@@ -258,32 +259,62 @@ def service_keyboard() -> Keyboard:
     keyboard = Keyboard(one_time=False, inline=False)
     keyboard.add(Text("Услуги"))
     keyboard.row()
+    keyboard.add(Text("Оставить заявку"))
+    keyboard.row()
     keyboard.add(Text("Главное меню"))
     return keyboard
 
 
-
-
 def request_services_keyboard(catalog: list[Service]) -> Keyboard:
-    """Показывает услуги для оформления заявки и кнопку отмены."""
+    """Кнопки выбора услуги в заявке."""
     keyboard = Keyboard(one_time=False, inline=False)
     for service in catalog:
         keyboard.add(Text(service.name))
         keyboard.row()
-    keyboard.add(Text("Отмена"))
+    keyboard.add(Text("Главное меню"))
     return keyboard
 
 
-def request_cancel_keyboard() -> Keyboard:
-    """Клавиатура для шага заявки с вводом текста."""
-    return Keyboard(one_time=False, inline=False).add(Text("Отмена"))
+def request_time_keyboard() -> Keyboard:
+    keyboard = Keyboard(one_time=False, inline=False)
+    for option in ("Как можно скорее", "В течение недели", "В выходные", "Другая дата"):
+        keyboard.add(Text(option))
+        keyboard.row()
+    keyboard.add(Text("Главное меню"))
+    return keyboard
+
+
+def request_contact_method_keyboard() -> Keyboard:
+    keyboard = Keyboard(one_time=False, inline=False)
+    keyboard.add(Text("Ответить в VK"))
+    keyboard.row()
+    keyboard.add(Text("Указать телефон"))
+    keyboard.row()
+    keyboard.add(Text("Указать email"))
+    keyboard.row()
+    keyboard.add(Text("Главное меню"))
+    return keyboard
+
+
+def request_text_keyboard() -> Keyboard:
+    keyboard = Keyboard(one_time=False, inline=False)
+    keyboard.add(Text("Отмена"))
+    keyboard.row()
+    keyboard.add(Text("Главное меню"))
+    return keyboard
 
 
 def request_confirm_keyboard() -> Keyboard:
     keyboard = Keyboard(one_time=False, inline=False)
-    keyboard.add(Text("Подтвердить заявку"))
-    keyboard.row()
-    keyboard.add(Text("Отмена"))
+    for option in (
+        "Подтвердить заявку",
+        "Изменить услугу",
+        "Изменить срок",
+        "Изменить контакт",
+        "Главное меню",
+    ):
+        keyboard.add(Text(option))
+        keyboard.row()
     return keyboard
 
 
@@ -304,6 +335,7 @@ def request_mailto_link(manager_contact: str, summary: str) -> str | None:
     subject = quote("Заявка на химчистку", safe="")
     body = quote(summary, safe="")
     return f"mailto:{recipient}?subject={subject}&body={body}"
+
 
 def get_keyboard(key: str, catalog: list[Service]) -> Keyboard:
     """Возвращает клавиатуру по её ключу из route_message."""
@@ -353,46 +385,114 @@ def build_bot(settings: Settings, catalog: list[Service]) -> Bot:
                 service = services_by_name.get(text)
                 if service is None:
                     await message.answer(
-                        "Выберите услугу кнопкой или напишите «Отмена».",
+                        "Выберите услугу кнопкой или вернитесь в главное меню.",
                         keyboard=request_services_keyboard(catalog),
                     )
                     return
                 session["service_id"] = service.id
                 session["step"] = "preferred_time"
                 await message.answer(
-                    f"Когда вам удобно провести услугу «{service.name}»? Напишите дату "
-                    "или примерный период, например «в выходные».",
-                    keyboard=request_cancel_keyboard(),
+                    f"Когда вам удобно провести услугу «{service.name}»?",
+                    keyboard=request_time_keyboard(),
                 )
                 return
 
             if step == "preferred_time":
-                preferred_time = raw_text.strip()
-                if len(preferred_time) < 2:
+                options = {
+                    "как можно скорее": "Как можно скорее",
+                    "в течение недели": "В течение недели",
+                    "в выходные": "В выходные",
+                }
+                if text in options:
+                    session["preferred_time"] = options[text]
+                    session["step"] = "contact_method"
                     await message.answer(
-                        "Напишите дату или примерный период, например «в выходные».",
-                        keyboard=request_cancel_keyboard(),
+                        "Как менеджеру удобнее ответить?",
+                        keyboard=request_contact_method_keyboard(),
                     )
                     return
-                session["preferred_time"] = preferred_time
-                session["step"] = "customer_contact"
+                if text == "другая дата":
+                    session["step"] = "preferred_time_custom"
+                    await message.answer(
+                        "Напишите удобную дату или примерный период.",
+                        keyboard=request_text_keyboard(),
+                    )
+                    return
                 await message.answer(
-                    "Оставьте телефон или email, чтобы менеджер мог ответить. "
-                    "Для отмены напишите «Отмена».",
-                    keyboard=request_cancel_keyboard(),
+                    "Выберите срок кнопкой или вернитесь в главное меню.",
+                    keyboard=request_time_keyboard(),
                 )
                 return
 
+            if step == "preferred_time_custom":
+                preferred_time = raw_text.strip()
+                if len(preferred_time) < 2:
+                    await message.answer(
+                        "Напишите дату или период, например «в середине ноября».",
+                        keyboard=request_text_keyboard(),
+                    )
+                    return
+                session["preferred_time"] = preferred_time
+                session["step"] = "contact_method"
+                await message.answer(
+                    "Как менеджеру удобнее ответить?",
+                    keyboard=request_contact_method_keyboard(),
+                )
+                return
+
+            if step == "contact_method":
+                if text == "ответить в vk":
+                    session["customer_contact"] = (
+                        f"Ответить в VK: https://vk.com/id{user_id}"
+                    )
+                    session["step"] = "confirm"
+                elif text == "указать телефон":
+                    session["contact_method"] = "phone"
+                    session["step"] = "customer_contact"
+                    await message.answer(
+                        "Введите номер телефона для связи.",
+                        keyboard=request_text_keyboard(),
+                    )
+                    return
+                elif text == "указать email":
+                    session["contact_method"] = "email"
+                    session["step"] = "customer_contact"
+                    await message.answer(
+                        "Введите email для связи.",
+                        keyboard=request_text_keyboard(),
+                    )
+                    return
+                else:
+                    await message.answer(
+                        "Выберите способ связи кнопкой.",
+                        keyboard=request_contact_method_keyboard(),
+                    )
+                    return
+
             if step == "customer_contact":
                 customer_contact = raw_text.strip()
+                if session.get("contact_method") == "email" and "@" not in customer_contact:
+                    await message.answer(
+                        "Похоже, в email нет знака @. Введите email ещё раз.",
+                        keyboard=request_text_keyboard(),
+                    )
+                    return
+                if session.get("contact_method") == "phone" and sum(ch.isdigit() for ch in customer_contact) < 7:
+                    await message.answer(
+                        "Введите телефон хотя бы с семью цифрами.",
+                        keyboard=request_text_keyboard(),
+                    )
+                    return
                 if len(customer_contact) < 3:
                     await message.answer(
-                        "Укажите телефон или email для ответа менеджера.",
-                        keyboard=request_cancel_keyboard(),
+                        "Введите контакт для связи или вернитесь в главное меню.",
+                        keyboard=request_text_keyboard(),
                     )
                     return
                 session["customer_contact"] = customer_contact
                 session["step"] = "confirm"
+
+            if session.get("step") == "confirm":
                 service = next(
                     (item for item in catalog if item.id == session.get("service_id")),
                     None,
@@ -400,7 +500,7 @@ def build_bot(settings: Settings, catalog: list[Service]) -> Bot:
                 if service is None:
                     request_sessions.pop(user_id, None)
                     await message.answer(
-                        "Не получилось найти услугу. Начните оформление заявки заново.",
+                        "Не получилось найти услугу. Начните оформление заново.",
                         keyboard=main_keyboard(),
                     )
                     return
@@ -409,36 +509,37 @@ def build_bot(settings: Settings, catalog: list[Service]) -> Bot:
                     session["preferred_time"],
                     session["customer_contact"],
                 )
-                await message.answer(
-                    f"Проверьте заявку:\n\n{summary}\n\n"
-                    "Если всё верно, нажмите «Подтвердить заявку».",
-                    keyboard=request_confirm_keyboard(),
-                )
-                return
 
-            if step == "confirm":
+                if text == "изменить услугу":
+                    session["step"] = "service"
+                    await message.answer(
+                        "Выберите другую услугу:",
+                        keyboard=request_services_keyboard(catalog),
+                    )
+                    return
+                if text == "изменить срок":
+                    session["step"] = "preferred_time"
+                    await message.answer(
+                        "Выберите удобный срок:",
+                        keyboard=request_time_keyboard(),
+                    )
+                    return
+                if text == "изменить контакт":
+                    session.pop("customer_contact", None)
+                    session.pop("contact_method", None)
+                    session["step"] = "contact_method"
+                    await message.answer(
+                        "Выберите способ связи:",
+                        keyboard=request_contact_method_keyboard(),
+                    )
+                    return
                 if text not in CONFIRM_TRIGGERS:
                     await message.answer(
-                        "Подтвердите заявку кнопкой или напишите «Отмена».",
+                        f"Проверьте заявку:\n\n{summary}",
                         keyboard=request_confirm_keyboard(),
                     )
                     return
-                service = next(
-                    (item for item in catalog if item.id == session.get("service_id")),
-                    None,
-                )
-                if service is None:
-                    request_sessions.pop(user_id, None)
-                    await message.answer(
-                        "Не получилось найти услугу. Начните оформление заявки заново.",
-                        keyboard=main_keyboard(),
-                    )
-                    return
-                summary = request_summary(
-                    service,
-                    session["preferred_time"],
-                    session["customer_contact"],
-                )
+
                 mailto = request_mailto_link(settings.manager_contact, summary)
                 if mailto:
                     answer = (
@@ -492,3 +593,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
