@@ -204,11 +204,11 @@ def test_main_keyboard_buttons(catalog):
 
 def test_services_keyboard_buttons(catalog, catalog_names):
     labels = keyboard_labels(bot.services_keyboard(catalog))
-    assert labels == catalog_names + ["Прайс-лист", "Главное меню"]
+    assert labels == catalog_names + ["Прайс-лист", "Оставить заявку", "Главное меню"]
 
 
 def test_service_keyboard_buttons(catalog):
-    assert keyboard_labels(bot.service_keyboard()) == ["Услуги", "Главное меню"]
+    assert keyboard_labels(bot.service_keyboard()) == ["Услуги", "Оставить заявку", "Главное меню"]
 
 
 def test_get_keyboard_returns_requested_keyboard(catalog):
