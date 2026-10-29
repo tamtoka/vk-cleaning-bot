@@ -18,6 +18,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 from vkbottle import Keyboard, Text
@@ -35,6 +36,9 @@ BACK_TRIGGERS = {"назад", "в меню", "главное меню"}
 SERVICES_TRIGGERS = {"услуги"}
 PRICE_TRIGGERS = {"прайс-лист", "прайс", "цены"}
 MANAGER_TRIGGERS = {"связаться с менеджером", "менеджер", "связаться"}
+REQUEST_TRIGGERS = {"оставить заявку", "оформить заявку", "заявка"}
+CANCEL_TRIGGERS = {"отмена", "отменить"}
+CONFIRM_TRIGGERS = {"подтвердить заявку", "подтвердить"}
 
 MANAGER_CONTACT_MISSING = "Контакт менеджера пока не указан"
 
@@ -161,7 +165,8 @@ def main_menu_text() -> str:
         "Выберите раздел с помощью кнопок внизу:\n"
         "• Услуги\n"
         "• Прайс-лист\n"
-        "• Связаться с менеджером"
+        "• Связаться с менеджером\n"
+        "• Оставить заявку"
     )
 
 
@@ -216,6 +221,8 @@ def route_message(
         return Reply(price_list_text(catalog), MAIN_KEYBOARD)
     if text in MANAGER_TRIGGERS:
         return Reply(manager_text(manager_contact), MAIN_KEYBOARD)
+    if text in REQUEST_TRIGGERS:
+        return Reply("Чтобы оформить заявку, нажмите кнопку «Оставить заявку».", MAIN_KEYBOARD)
 
     services_by_name = {normalize(service.name): service for service in catalog}
     if text in services_by_name:
@@ -231,6 +238,8 @@ def main_keyboard() -> Keyboard:
     keyboard.add(Text("Прайс-лист"))
     keyboard.row()
     keyboard.add(Text("Связаться с менеджером"))
+    keyboard.row()
+    keyboard.add(Text("Оставить заявку"))
     return keyboard
 
 
@@ -253,6 +262,49 @@ def service_keyboard() -> Keyboard:
     return keyboard
 
 
+
+
+def request_services_keyboard(catalog: list[Service]) -> Keyboard:
+    """Показывает услуги для оформления заявки и кнопку отмены."""
+    keyboard = Keyboard(one_time=False, inline=False)
+    for service in catalog:
+        keyboard.add(Text(service.name))
+        keyboard.row()
+    keyboard.add(Text("Отмена"))
+    return keyboard
+
+
+def request_cancel_keyboard() -> Keyboard:
+    """Клавиатура для шага заявки с вводом текста."""
+    return Keyboard(one_time=False, inline=False).add(Text("Отмена"))
+
+
+def request_confirm_keyboard() -> Keyboard:
+    keyboard = Keyboard(one_time=False, inline=False)
+    keyboard.add(Text("Подтвердить заявку"))
+    keyboard.row()
+    keyboard.add(Text("Отмена"))
+    return keyboard
+
+
+def request_summary(service: Service, preferred_time: str, customer_contact: str) -> str:
+    return (
+        "Заявка на химчистку\n"
+        f"Услуга: {service.name}\n"
+        f"Когда удобно: {preferred_time}\n"
+        f"Контакт для ответа: {customer_contact}"
+    )
+
+
+def request_mailto_link(manager_contact: str, summary: str) -> str | None:
+    """Создаёт письмо в почтовом приложении, не отправляя его автоматически."""
+    recipient = manager_contact.strip()
+    if "@" not in recipient:
+        return None
+    subject = quote("Заявка на химчистку", safe="")
+    body = quote(summary, safe="")
+    return f"mailto:{recipient}?subject={subject}&body={body}"
+
 def get_keyboard(key: str, catalog: list[Service]) -> Keyboard:
     """Возвращает клавиатуру по её ключу из route_message."""
     if key == SERVICES_KEYBOARD:
@@ -265,14 +317,154 @@ def get_keyboard(key: str, catalog: list[Service]) -> Keyboard:
 def build_bot(settings: Settings, catalog: list[Service]) -> Bot:
     """Создаёт бота и регистрирует обработчик сообщений."""
     bot = Bot(settings.token)
+    request_sessions: dict[int, dict[str, str]] = {}
 
     @bot.on.message()
     async def handle_message(message: Message) -> None:
-        reply = route_message(message.text or "", catalog, settings.manager_contact)
+        raw_text = message.text or ""
+        text = normalize(raw_text)
+        user_id = int(message.from_id or 0)
+
+        if text in MENU_TRIGGERS or text in BACK_TRIGGERS:
+            request_sessions.pop(user_id, None)
+            reply = route_message(raw_text, catalog, settings.manager_contact)
+            await message.answer(reply.text, keyboard=get_keyboard(reply.keyboard, catalog))
+            return
+
+        if text in CANCEL_TRIGGERS and user_id in request_sessions:
+            request_sessions.pop(user_id, None)
+            await message.answer("Оформление заявки отменено.", keyboard=main_keyboard())
+            return
+
+        if text in REQUEST_TRIGGERS:
+            request_sessions[user_id] = {"step": "service"}
+            await message.answer(
+                "Давайте оформим заявку. Выберите услугу:",
+                keyboard=request_services_keyboard(catalog),
+            )
+            return
+
+        session = request_sessions.get(user_id)
+        if session:
+            step = session.get("step")
+
+            if step == "service":
+                services_by_name = {normalize(service.name): service for service in catalog}
+                service = services_by_name.get(text)
+                if service is None:
+                    await message.answer(
+                        "Выберите услугу кнопкой или напишите «Отмена».",
+                        keyboard=request_services_keyboard(catalog),
+                    )
+                    return
+                session["service_id"] = service.id
+                session["step"] = "preferred_time"
+                await message.answer(
+                    f"Когда вам удобно провести услугу «{service.name}»? Напишите дату "
+                    "или примерный период, например «в выходные».",
+                    keyboard=request_cancel_keyboard(),
+                )
+                return
+
+            if step == "preferred_time":
+                preferred_time = raw_text.strip()
+                if len(preferred_time) < 2:
+                    await message.answer(
+                        "Напишите дату или примерный период, например «в выходные».",
+                        keyboard=request_cancel_keyboard(),
+                    )
+                    return
+                session["preferred_time"] = preferred_time
+                session["step"] = "customer_contact"
+                await message.answer(
+                    "Оставьте телефон или email, чтобы менеджер мог ответить. "
+                    "Для отмены напишите «Отмена».",
+                    keyboard=request_cancel_keyboard(),
+                )
+                return
+
+            if step == "customer_contact":
+                customer_contact = raw_text.strip()
+                if len(customer_contact) < 3:
+                    await message.answer(
+                        "Укажите телефон или email для ответа менеджера.",
+                        keyboard=request_cancel_keyboard(),
+                    )
+                    return
+                session["customer_contact"] = customer_contact
+                session["step"] = "confirm"
+                service = next(
+                    (item for item in catalog if item.id == session.get("service_id")),
+                    None,
+                )
+                if service is None:
+                    request_sessions.pop(user_id, None)
+                    await message.answer(
+                        "Не получилось найти услугу. Начните оформление заявки заново.",
+                        keyboard=main_keyboard(),
+                    )
+                    return
+                summary = request_summary(
+                    service,
+                    session["preferred_time"],
+                    session["customer_contact"],
+                )
+                await message.answer(
+                    f"Проверьте заявку:\n\n{summary}\n\n"
+                    "Если всё верно, нажмите «Подтвердить заявку».",
+                    keyboard=request_confirm_keyboard(),
+                )
+                return
+
+            if step == "confirm":
+                if text not in CONFIRM_TRIGGERS:
+                    await message.answer(
+                        "Подтвердите заявку кнопкой или напишите «Отмена».",
+                        keyboard=request_confirm_keyboard(),
+                    )
+                    return
+                service = next(
+                    (item for item in catalog if item.id == session.get("service_id")),
+                    None,
+                )
+                if service is None:
+                    request_sessions.pop(user_id, None)
+                    await message.answer(
+                        "Не получилось найти услугу. Начните оформление заявки заново.",
+                        keyboard=main_keyboard(),
+                    )
+                    return
+                summary = request_summary(
+                    service,
+                    session["preferred_time"],
+                    session["customer_contact"],
+                )
+                mailto = request_mailto_link(settings.manager_contact, summary)
+                if mailto:
+                    answer = (
+                        "Заявка подготовлена. Откройте ссылку, чтобы создать письмо "
+                        "и отправить его менеджеру:\n"
+                        f"{mailto}\n\n"
+                        f"Кому: {settings.manager_contact}\n\n"
+                        f"{summary}\n\n"
+                        "Письмо отправится только после вашего подтверждения "
+                        "в почтовом приложении."
+                    )
+                else:
+                    contact = settings.manager_contact or MANAGER_CONTACT_MISSING
+                    answer = (
+                        "Заявка собрана:\n\n"
+                        f"{summary}\n\n"
+                        f"Контакт менеджера: {contact}"
+                    )
+                request_sessions.pop(user_id, None)
+                await message.answer(answer, keyboard=main_keyboard())
+                return
+
+        reply = route_message(raw_text, catalog, settings.manager_contact)
         await message.answer(reply.text, keyboard=get_keyboard(reply.keyboard, catalog))
 
     return bot
-
 
 def _setup_console() -> None:
     """Делает вывод кириллицы читаемым в консоли Windows."""
